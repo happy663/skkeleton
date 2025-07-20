@@ -15,6 +15,8 @@ export class Source implements BaseSource {
 }
 
 export class Dictionary implements BaseDictionary {
+  readonly sourceType = "google_japanese_input";
+
   async connect() {}
   async getHenkanResult(_type: HenkanType, word: string): Promise<string[]> {
     // It should not work for "okuriari".
@@ -34,12 +36,9 @@ export class Dictionary implements BaseDictionary {
     try {
       // Note: Google API access may be slow.
       const resp = await deadline(
-        fetch(
-          `http://www.google.com/transliterate?${params.toString()}`,
-          {
-            method: "GET",
-          },
-        ),
+        fetch(`http://www.google.com/transliterate?${params.toString()}`, {
+          method: "GET",
+        }),
         500,
       );
       const respJson = await resp.json();
