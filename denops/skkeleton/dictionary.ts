@@ -169,24 +169,24 @@ export class NumberConvertWrapper implements Dictionary {
       candidates.unshift(
         ...(await this.#inner.getCompletionResult(prefix, feed)),
       );
-      return candidates.map((
-        [kana, cand],
-      ) => [kana, cand.map((c) => convertNumber(c, prefix))]);
+      return candidates.map(([kana, cand]) => [
+        kana,
+        cand.map((c) => convertNumber(c, prefix)),
+      ]);
     }
   }
 }
 
 export function wrapDictionary(dict: Dictionary): Dictionary {
-  return new NumberConvertWrapper(
-    dict,
-  );
+  return new NumberConvertWrapper(dict);
 }
 
 export type HenkanType = "okuriari" | "okurinasi";
 
-export const isHenkanType = is.LiteralOneOf(
-  ["okurinasi", "okuriari"] as const,
-) satisfies Predicate<HenkanType>;
+export const isHenkanType = is.LiteralOneOf([
+  "okurinasi",
+  "okuriari",
+] as const) satisfies Predicate<HenkanType>;
 
 function gatherCandidates(
   collector: Map<string, Set<string>>,
@@ -203,10 +203,7 @@ export class Library {
   #dictionaries: Dictionary[];
   #userDictionary: UserDictionary | undefined;
 
-  constructor(
-    dictionaries?: Dictionary[],
-    userDictionary?: UserDictionary,
-  ) {
+  constructor(dictionaries?: Dictionary[], userDictionary?: UserDictionary) {
     this.#userDictionary = userDictionary ?? undefined;
     this.#dictionaries = [];
     if (userDictionary) {
@@ -242,10 +239,14 @@ export class Library {
       return [];
     } else if (prefix.length == 1) {
       for (const dic of this.#dictionaries) {
-        gatherCandidates(collector, [[
-          prefix,
-          await dic.getHenkanResult("okurinasi", prefix),
-        ]]);
+        const dicType =
+          (dic as any).sourceType || dic.constructor.name || "Unknown";
+        if (dicType === "google_japanese_input") {
+          continue; // スキップ
+        }
+        gatherCandidates(collector, [
+          [prefix, await dic.getHenkanResult("okurinasi", prefix)],
+        ]);
       }
     } else {
       for (const dic of this.#dictionaries) {
@@ -255,8 +256,10 @@ export class Library {
         );
       }
     }
-    return Array.from(collector.entries())
-      .map(([kana, cset]) => [kana, Array.from(cset)]);
+    return Array.from(collector.entries()).map(([kana, cset]) => [
+      kana,
+      Array.from(cset),
+    ]);
   }
 
   getRanks(prefix: string): RankData {
@@ -314,7 +317,7 @@ export async function load(paths: Record<string, string>): Promise<Library> {
   const userMod = await import(
     toFileUrl(paths["sources/user_dictionary"]).href
   );
-  const userDictionary = await (new userMod.Source()).getUserDictionary();
+  const userDictionary = await new userMod.Source().getUserDictionary();
 
   const dictionaries: Dictionary[] = [];
   for (const source of config.sources) {
@@ -328,9 +331,7 @@ export async function load(paths: Record<string, string>): Promise<Library> {
 
     const mod = await import(toFileUrl(path).href);
 
-    dictionaries.push(
-      ...await (new mod.Source().getDictionaries()),
-    );
+    dictionaries.push(...(await new mod.Source().getDictionaries()));
   }
 
   return new Library(dictionaries, userDictionary);
