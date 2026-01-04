@@ -565,7 +565,13 @@ SKKではデフォルトで変換ポイントとして逆三角形を使いま�
 'ambiwidth' の設定を変更するか |skkeleton-config-markerHenkan| 及び
 |skkeleton-config-markerHenkanSelect| を 'ambiwidth' の対象外に
 変更してみてください。
-
+>vim
+    " EAW プロパティが Neutral である U+25BF, U+25BE を設定する例:
+    call skkeleton#config({
+      \ 'markerHenkan': '▿',
+      \ 'markerHenkanSelect': '▾',
+      \ })
+<
 プラグインと干渉する~
 
 skkeletonを有効化、無効化する際にフックが使えますので
