@@ -85,6 +85,11 @@ export class Dictionary implements BaseDictionary {
   }
 
   async getHenkanResult(_type: HenkanType, word: string): Promise<string[]> {
+    // SKKサーバーでは送り仮名の変換はしない
+    if (_type === "okuriari") {
+      return [];
+    }
+
     await this.connect();
 
     if (this.#server == null) return [];
