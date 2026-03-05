@@ -5,9 +5,9 @@ import { romToZen } from "./kana/rom_zen.ts";
 import type { KanaResult, KanaTable } from "./kana/type.ts";
 import { Cell, readFileWithEncoding } from "./util.ts";
 
-import { distinctBy } from "jsr:@std/collections@~1.0.5/distinct-by";
-import { is } from "jsr:@core/unknownutil@~4.3.0/is";
-import { assert } from "jsr:@core/unknownutil@~4.3.0/assert";
+import { distinctBy } from "@std/collections/distinct-by";
+import { is } from "@core/unknownutil/is";
+import { assert } from "@core/unknownutil/assert";
 
 type PartialKanaTable = [string, KanaResult | null][];
 
@@ -57,6 +57,10 @@ export function registerKanaTable(
   assert(rawTable, is.Record);
   const table: PartialKanaTable = Object.entries(rawTable)
     .map(([kana, result]) => {
+      const lower = kana.toLowerCase();
+      if (kana !== lower) {
+        kana = `<s-${lower}>`;
+      }
       return [kana, asKanaResult(result)];
     });
   injectKanaTable(name, table, create);
@@ -85,6 +89,30 @@ export async function loadKanaTableFiles(
 
   await Promise.all(tasks);
   injectKanaTable("rom", table);
+}
+
+export async function loadKanaTableFile(
+  tableName: string,
+  path: string,
+  encoding: string,
+  create: boolean,
+): Promise<void> {
+  const table: KanaTable = [];
+
+  const file = await readFileWithEncoding(path, encoding);
+  const lines = file.split("\n");
+  for (const line of lines) {
+    if (line.startsWith("#")) {
+      continue;
+    }
+    if (line.trim() === "") {
+      continue;
+    }
+    const [from, result] = line.split(",");
+    table.push([from, [result, ""]]);
+  }
+
+  injectKanaTable(tableName, table, create);
 }
 
 /*

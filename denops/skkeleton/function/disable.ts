@@ -1,8 +1,9 @@
 import { config } from "../config.ts";
 import type { Context } from "../context.ts";
-import { autocmd } from "../deps.ts";
 import { initializeState } from "../state.ts";
 import { kakutei } from "./common.ts";
+
+import * as autocmd from "@denops/std/autocmd";
 
 export async function disable(context: Context) {
   const denops = context.denops!;

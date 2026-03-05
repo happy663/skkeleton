@@ -1,10 +1,11 @@
-import { autocmd, Denops } from "./deps.ts";
-import * as DenopsTest from "./deps/denops_test.ts";
 import { main } from "./main.ts";
 import { currentContext } from "./store.ts";
 
-import { fromFileUrl } from "jsr:@std/path@~1.0.3/from-file-url";
-import { resolve } from "jsr:@std/path@~1.0.3/resolve";
+import { Denops } from "@denops/std";
+import * as autocmd from "@denops/std/autocmd";
+import * as DenopsTest from "@denops/test";
+import { resolve } from "@std/path/resolve";
+import { fromFileUrl } from "@std/path/from-file-url";
 
 const runtimepath = resolve(
   fromFileUrl(new URL("../..", import.meta.url)),

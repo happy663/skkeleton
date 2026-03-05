@@ -1,12 +1,13 @@
+import { getOkuriStr } from "../../skkeleton/okuri.ts";
+import { okuriSplits } from "./okurisplits.ts";
+
 import {
   BaseSource,
   type GatherArguments,
   type GetCompletePositionArguments,
   type OnCompleteDoneArguments,
-} from "../skkeleton/deps/ddc/source.ts";
-import { type Item } from "../skkeleton/deps/ddc/types.ts";
-import { getOkuriStr } from "../skkeleton/okuri.ts";
-import { okuriSplits } from "./skkeleton/okurisplits.ts";
+} from "@shougo/ddc-vim/source";
+import { type Item } from "@shougo/ddc-vim/types";
 
 type Never = Record<PropertyKey, never>;
 

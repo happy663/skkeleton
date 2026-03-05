@@ -1,5 +1,6 @@
-import { assertEquals } from "jsr:@std/assert@~1.0.3/equals";
 import { okuriSplits } from "./okurisplits.ts";
+
+import { assertEquals } from "@std/assert/equals";
 
 Deno.test({
   name: "split",

@@ -1,8 +1,10 @@
 import { config } from "./config.ts";
 import { Context } from "./context.ts";
-import { autocmd, vars } from "./deps.ts";
 import { initializeState } from "./state.ts";
 import { variables } from "./store.ts";
+
+import * as autocmd from "@denops/std/autocmd";
+import * as vars from "@denops/std/variable";
 
 export async function modeChange(context: Context, mode: string) {
   context.mode = mode;

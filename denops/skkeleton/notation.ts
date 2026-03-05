@@ -1,7 +1,6 @@
-import type { Denops } from "./deps.ts";
-
-import { is } from "jsr:@core/unknownutil@~4.3.0/is";
-import { assert } from "jsr:@core/unknownutil@~4.3.0/assert";
+import { assert } from "@core/unknownutil/assert";
+import { is } from "@core/unknownutil/is";
+import type { Denops } from "@denops/std";
 
 let received = false;
 export let notationToKey: Record<string, string> = {};

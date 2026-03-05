@@ -1,4 +1,3 @@
-import { autocmd, Denops, vars } from "../deps.ts";
 import { currentKanaTable } from "../kana.ts";
 import { currentLibrary } from "../store.ts";
 import { currentContext } from "../store.ts";
@@ -8,7 +7,10 @@ import { deleteChar, kanaInput } from "./input.ts";
 import { abbrev, hankatakana, katakana, zenkaku } from "./mode.ts";
 import { dispatch } from "./testutil.ts";
 
-import { assertEquals } from "jsr:@std/assert@~1.0.3/equals";
+import { Denops } from "@denops/std";
+import * as autocmd from "@denops/std/autocmd";
+import * as vars from "@denops/std/variable";
+import { assertEquals } from "@std/assert/equals";
 
 test({
   mode: "all",

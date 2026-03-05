@@ -46,10 +46,8 @@ let g:skkeleton#mapped_keys = extend(get(g:, 'skkeleton#mapped_keys', []), skkel
 
 function! skkeleton#map() abort
   if mode() ==# 'n'
-    let modes = ['i', 'c']
     let mode = 'i'
   else
-    let modes = [mode()]
     let mode = mode()
   endif
 
@@ -64,15 +62,28 @@ function! skkeleton#map() abort
       let k = c
     endif
     let func = 'handleKey'
-    for m in modes
-      let match = matchlist(maparg(c, m), '<Plug>(skkeleton-\(\a\+\))')
-      if !empty(match)
-        let func = match[1]
-      endif
-    endfor
+    let match = matchlist(maparg(c, mode), '<Plug>(skkeleton-\(\a\+\))')
+    if !empty(match)
+      let func = match[1]
+    endif
     execute printf('%snoremap <buffer> <nowait> %s <Cmd>call skkeleton#handle(%s, {"key": %s})<CR>',
           \ mode,
           \ c, string(func), string(k))
+  endfor
+endfunction
+
+function! skkeleton#dangerously_clear_buffer_local_mappings() abort
+  let maps = maplist()
+  \ ->filter('v:val.buffer && (stridx(get(v:val, "rhs"), "skkeleton") != -1 || stridx(get(v:val, "desc"), "skkeleton") != -1)')
+  for m in l:maps
+    let lhs = m.lhs->substitute('|', '<Bar>', 'g')
+    try
+      execute printf('%sunmap <buffer> %s', m.mode, lhs)
+    catch
+      echohl ErrorMsg
+      echo printf('[skkeleton#dangerously_clear_buffer_local_mappings] failed: %sunmap <buffer> %s', m.mode, lhs)
+      echohl None
+    endtry
   endfor
 endfunction
 
@@ -142,20 +153,23 @@ function! skkeleton#register_keymap(state, key, func_name)
   call skkeleton#request_async('registerKeyMap', [a:state, key, a:func_name])
 endfunction
 
-function! skkeleton#register_kanatable(table_name, table, ...) abort
-  let create = get(a:000, 0, v:false)
-  call skkeleton#request_async('registerKanaTable', [a:table_name, a:table, create])
+function! skkeleton#register_kanatable(table_name, table, create=v:false) abort
+  call skkeleton#request_async('registerKanaTable', [a:table_name, a:table, a:create])
+endfunction
+
+function! skkeleton#register_kanatable_file(table_name, path, encoding='', create=v:false) abort
+  call skkeleton#request_async('registerKanaTableFile', [a:table_name, a:path, a:encoding, a:create])
 endfunction
 
 " return [complete_type, complete_info]
 function! s:complete_info() abort
   if exists('*pum#visible') && pum#visible()
-    return ['pum.vim', pum#complete_info()]
+    return ['pum.vim', pum#complete_info(['pum_visible', 'selected'])]
   elseif has('nvim') && luaeval('select(2, pcall(function() return package.loaded["cmp"].visible() end)) == true')
     let selected = luaeval('require("cmp").get_active_entry() ~= nil')
     return ['cmp', {'pum_visible': v:true, 'selected': selected ? 1 : -1}]
   else
-    return ['native', complete_info()]
+    return ['native', complete_info(['pum_visible', 'selected'])]
   endif
 endfunction
 
@@ -184,10 +198,11 @@ function! skkeleton#handle(func, opts) abort
   let opts = a:opts->deepcopy()
   let key = opts->get('key')
   if type(key) == v:t_string
-    let key = [key]
-  endif
-  if type(key) == v:t_list
+    let opts.key = [get(g:skkeleton#notation#key_to_notation, key, key)]
+  elseif type(key) == v:t_list
     let opts.key = map(key, 'get(g:skkeleton#notation#key_to_notation, v:val, v:val)')
+  else
+    let opts.key = ['']
   endif
   let ret = skkeleton#request('handle', [a:func, opts, skkeleton#vim_status()])
 

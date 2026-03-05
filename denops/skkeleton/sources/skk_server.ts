@@ -9,9 +9,9 @@ import { Encode } from "../types.ts";
 import type { CompletionData, Encoding, SkkServerOptions } from "../types.ts";
 
 // NOTE: import * as encoding does not work!
-import encoding from "npm:encoding-japanese@2.2.0";
+import encoding from "encoding-japanese";
 
-import { TextLineStream } from "jsr:@std/streams@~1.0.3/text-line-stream";
+import { TextLineStream } from "@std/streams/text-line-stream";
 
 type Server = {
   conn: Deno.Conn;
@@ -85,6 +85,11 @@ export class Dictionary implements BaseDictionary {
   }
 
   async getHenkanResult(_type: HenkanType, word: string): Promise<string[]> {
+    // SKKサーバーでは送り仮名の変換はしない
+    if (_type === "okuriari") {
+      return [];
+    }
+
     await this.connect();
 
     if (this.#server == null) return [];

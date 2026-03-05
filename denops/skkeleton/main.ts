@@ -1,17 +1,25 @@
 import { config, setConfig } from "./config.ts";
-import { autocmd, Denops, Entrypoint, fn, vars } from "./deps.ts";
 import { functions, modeFunctions } from "./function.ts";
 import { disable as disableFunc } from "./function/disable.ts";
 import { isHenkanType, load as loadDictionary } from "./dictionary.ts";
 import { Dictionary as DenoKvDictionary } from "./sources/deno_kv.ts";
-import { currentKanaTable, registerKanaTable } from "./kana.ts";
+import {
+  currentKanaTable,
+  loadKanaTableFile,
+  registerKanaTable,
+} from "./kana.ts";
 import { handleKey, registerKeyMap } from "./keymap.ts";
 import { initializeStateWithAbbrev } from "./mode.ts";
 import { keyToNotation, notationToKey, receiveNotation } from "./notation.ts";
 import { currentContext, currentLibrary, variables } from "./store.ts";
-import { globpath } from "./util.ts";
+import { InputState } from "./state.ts";
 import type { CompletionData, RankData } from "./types.ts";
-import { as, assert, is } from "jsr:@core/unknownutil@~4.3.0";
+
+import { as, assert, is } from "@core/unknownutil";
+import type { Denops, Entrypoint } from "@denops/std";
+import * as autocmd from "@denops/std/autocmd";
+import * as fn from "@denops/std/function";
+import * as vars from "@denops/std/variable";
 
 type CompleteInfo = {
   pum_visible: boolean;
@@ -27,6 +35,7 @@ type VimStatus = {
 
 type HandleResult = {
   state: {
+    henkanFeed: string;
     phase: string;
   };
   result: string;
@@ -54,12 +63,9 @@ async function init(denops: Denops) {
   }
   currentContext.init().denops = denops;
 
-  currentLibrary.setInitializer(async () =>
+  currentLibrary.setInitializer(() =>
     loadDictionary(
-      await globpath(
-        denops,
-        "denops/skkeleton/sources",
-      ),
+      config.sources,
     )
   );
 
@@ -69,16 +75,30 @@ async function init(denops: Denops) {
     helper.remove("*");
     // Note: 使い終わったステートを初期化する
     //       CmdlineEnterにしてしまうと辞書登録時の呼び出しで壊れる
-    helper.define(
-      ["InsertLeave", "CmdlineLeave"],
-      "*",
+    //       挿入モードの`<C-o>`(niI)などで解除されると困るのでModeChangedの:nにしておく
+    //       SafeStateトランポリンをしているのはプラグインによるModeChangedの呼び出しで解除されるのを防ぐため
+    //       このイベントはユーザーの操作を受け付けるタイミングで呼ばれるので、そこでNormalなら改めて処理を行う
+    const commands = [
       `call denops#request('${denops.name}', 'reset', [])`,
-    );
-    helper.define(
-      ["InsertLeave", "CmdlineLeave"],
-      "*",
       `call skkeleton#disable()`,
+    ];
+    helper.define(
+      ["ModeChanged"],
+      "*:n",
+      "autocmd SafeState * ++once " + [
+        "if mode() == 'n'",
+        ...commands,
+        "endif",
+      ].join("|"),
     );
+    // insertのままwindow切り替えをすると残るのでWinLeaveでも消す
+    for (const cmd of commands) {
+      helper.define(
+        ["WinLeave"],
+        "*",
+        cmd,
+      );
+    }
   });
 
   try {
@@ -127,7 +147,11 @@ async function enable(opts: unknown, vimStatus: unknown): Promise<string> {
 async function disable(opts: unknown, vimStatus: unknown): Promise<string> {
   const context = currentContext.get();
   const state = currentContext.get().state;
-  if ((state.type !== "input" || state.mode !== "direct") && vimStatus) {
+  // Note: plugin/skkeleton.vimで定義している物はoptsが空なのでこっちは呼ばない
+  if (
+    (state.type !== "input" || state.mode !== "direct") && isOpts(opts) &&
+    vimStatus
+  ) {
     return handle(opts, vimStatus);
   }
   await disableFunc(context);
@@ -220,6 +244,7 @@ function buildResult(result: string): HandleResult {
   }
   return {
     state: {
+      henkanFeed: (state as InputState)?.henkanFeed ?? "",
       phase,
     },
     result,
@@ -245,6 +270,18 @@ export const main: Entrypoint = async (denops) => {
     registerKanaTable(tableName: unknown, table: unknown, create: unknown) {
       assert(tableName, is.String);
       registerKanaTable(tableName, table, !!create);
+      return Promise.resolve();
+    },
+    async registerKanaTableFile(
+      tableName: unknown,
+      path: unknown,
+      encoding: unknown,
+      create: unknown,
+    ) {
+      assert(tableName, is.String);
+      assert(path, is.String);
+      assert(encoding, is.String);
+      await loadKanaTableFile(tableName, path, encoding, !!create);
       return Promise.resolve();
     },
     async handle(
