@@ -228,6 +228,8 @@ export class Dictionary implements UserDictionary {
       Array.from(this.#rank.entries()).sort((a, b) => a[1] - b[1]).map((e) =>
         e[0]
       ),
+      null,
+      2,
     );
     try {
       await Deno.writeTextFile(rankPath, rankData);
