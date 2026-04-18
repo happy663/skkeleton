@@ -348,9 +348,6 @@ export async function load(sources: string[]): Promise<Library> {
       continue;
     }
 
-    const mod = await import(toFileUrl(path).href);
-
-    dictionaries.push(...(await new mod.Source().getDictionaries()));
   }
 
   return new Library(dictionaries, userDictionary);
