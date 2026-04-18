@@ -73,7 +73,7 @@ export async function newline(context: Context) {
   }
 }
 
-export function cancel(context: Context) {
+export async function cancel(context: Context) {
   const state = context.state;
   if (
     state.type === "input" &&
@@ -83,12 +83,12 @@ export function cancel(context: Context) {
     context.kakutei("\x03");
   }
   if (config.immediatelyCancel) {
-    initializeState(context.state);
+    await initializeStateWithAbbrev(context);
     return;
   }
   switch (state.type) {
     case "input":
-      initializeState(state);
+      await initializeStateWithAbbrev(context);
       break;
     case "henkan":
       context.state.type = "input";
