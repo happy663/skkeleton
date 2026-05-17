@@ -106,31 +106,10 @@ export class Dictionary implements BaseDictionary {
   }
 
   async getCompletionResult(
-    prefix: string,
-    feed: string,
+    _prefix: string,
+    _feed: string,
   ): Promise<CompletionData> {
-    let midashis: string[] = [];
-    if (feed != "") {
-      const table = getKanaTable();
-      for (const [key, kanas] of table) {
-        if (key.startsWith(feed) && kanas.length > 1) {
-          const feedPrefix = prefix + (kanas as string[])[0];
-          midashis = midashis.concat(await this.getMidashis(feedPrefix));
-        }
-      }
-    } else {
-      midashis = await this.getMidashis(prefix);
-    }
-
-    const candidates: CompletionData = [];
-    for (const midashi of midashis) {
-      candidates.push([
-        midashi,
-        await this.getHenkanResult("okurinasi", midashi),
-      ]);
-    }
-
-    return candidates;
+    return [];
   }
 
   private async getMidashis(prefix: string): Promise<string[]> {
