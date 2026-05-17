@@ -105,6 +105,8 @@ export class Dictionary implements BaseDictionary {
     return result;
   }
 
+  // 補完時にskkServerへリクエストを飛ばさない。
+  // 経路解析: https://github.com/happy663/dotfiles/issues/255#issuecomment-4470747322
   async getCompletionResult(
     _prefix: string,
     _feed: string,
