@@ -1,5 +1,7 @@
 import { config, setConfig } from "./config.ts";
+import { buildCompleteItems } from "./completion.ts";
 import { functions, modeFunctions } from "./function.ts";
+import { completionKakutei } from "./function/common.ts";
 import { disable as disableFunc } from "./function/disable.ts";
 import { isHenkanType, load as loadDictionary } from "./dictionary.ts";
 import { Dictionary as DenoKvDictionary } from "./sources/deno_kv.ts";
@@ -28,8 +30,11 @@ type CompleteInfo = {
 
 type VimStatus = {
   prevInput: string;
+  bufnr: number;
+  lnum: number;
   completeInfo: CompleteInfo;
   completeType: string;
+  completeConfirmKey: string;
   mode: string;
 };
 
@@ -39,6 +44,11 @@ type HandleResult = {
     phase: string;
   };
   result: string;
+  // where to put the cursor once {result} has been applied, or 0 for leaving it
+  // where the applied text ends
+  // |skkeleton-functions-kakuteiUndo| is the only thing asking for this so far
+  restoreLnum: number;
+  restoreCol: number;
 };
 
 const isOpts = is.ObjectOf({
@@ -118,7 +128,11 @@ async function enable(opts: unknown, vimStatus: unknown): Promise<string> {
     console.log("skkeleton doesn't allowed in replace mode");
     return "";
   }
-  if ((oldState.type !== "input" || oldState.mode !== "direct") && vimStatus) {
+  if (
+    oldState.type !== "escape" &&
+    (oldState.type !== "input" || oldState.mode !== "direct") &&
+    vimStatus
+  ) {
     return handle(opts, vimStatus);
   }
   // Note: must set before context initialization
@@ -158,21 +172,16 @@ async function disable(opts: unknown, vimStatus: unknown): Promise<string> {
   return context.preEdit.output(context.toString());
 }
 
+// Note: the confirm key comes from the Vim side as part of the completion
+//       backend definition (|skkeleton#register_completion_backend()|)
 function handleCompleteKey(
   completed: boolean,
-  completeType: string,
+  confirmKey: string,
   notation: string,
 ): string | null {
   if (notation === "<cr>") {
-    if (completed && config.eggLikeNewline) {
-      switch (completeType) {
-        case "native":
-          return notationToKey["<c-y>"];
-        case "pum.vim":
-          return "<Cmd>call pum#map#confirm()";
-        case "cmp":
-          return "<Cmd>lua require('cmp').confirm({select = true})";
-      }
+    if (completed && config.eggLikeNewline && confirmKey !== "") {
+      return confirmKey;
     }
   }
   return null;
@@ -186,9 +195,9 @@ async function handle(
   const keyList = opts.key.map((key) => {
     return keyToNotation[notationToKey[key]] ?? key;
   });
-  const { completeInfo, completeType, mode } = vimStatus as VimStatus;
+  const { completeInfo, completeType, completeConfirmKey } =
+    vimStatus as VimStatus;
   const context = currentContext.get();
-  context.vimMode = mode;
   if (completeInfo.pum_visible) {
     if (config.debug) {
       console.log("input after complete");
@@ -202,7 +211,7 @@ async function handle(
     }
     const handled = handleCompleteKey(
       completeInfo.selected >= 0,
-      completeType,
+      completeConfirmKey ?? "",
       notation,
     );
     if (is.String(handled)) {
@@ -229,7 +238,15 @@ async function handle(
 }
 
 function buildResult(result: string): HandleResult {
-  const state = currentContext.get().state;
+  const context = currentContext.get();
+  const state = context.state;
+  // Note: asked for once and then forgotten, so that it does not travel along
+  //       with every following key handling
+  //       dropped when the handling has left something pending: an uppercase
+  //       key confirms a henkan and opens a new one after it in one go, and
+  //       the cursor belongs to the one it has opened
+  const restore = context.hasPendingInput ? void 0 : context.restorePoint;
+  context.restorePoint = void 0;
   let phase = "";
   if (state.type === "input") {
     if (state.mode === "okurinasi") {
@@ -248,6 +265,8 @@ function buildResult(result: string): HandleResult {
       phase,
     },
     result,
+    restoreLnum: restore?.lnum ?? 0,
+    restoreCol: restore?.col ?? 0,
   };
 }
 
@@ -290,10 +309,35 @@ export const main: Entrypoint = async (denops) => {
       vimStatus: unknown,
     ): Promise<HandleResult> {
       await init(denops);
-      const { mode, prevInput } = vimStatus as VimStatus;
+      const { mode, prevInput, bufnr, lnum } = vimStatus as VimStatus;
       const context = currentContext.get();
+      // receive where Vim is at this key handling
+      context.vimMode = mode;
+      context.prevInput = prevInput;
+      context.bufnr = bufnr;
+      context.lnum = lnum;
+      // Note: a column |skkeleton-functions-kakuteiUndo| has remembered is only
+      //       good while skkeleton is still writing where the undo happened.
+      //       Once there is nothing pending -- the reading taken all the way
+      //       back with cancel, say -- nobody is going to confirm anything
+      //       there, and the column must not move the cursor on some unrelated
+      //       kakutei later on.
+      //       asked before the mismatch below resets the state: a completion
+      //       engine writing its preview into the buffer is a mismatch, and
+      //       the reading it is about to complete is very much still pending
+      if (!context.hasPendingInput) {
+        context.forgetPointRestore();
+      }
+      // only now is it known where a kakutei has been written to the buffer
+      const resolved = context.resolvePendingKakutei();
       // 補完の後などpreEditとバッファが不一致している状態の時にリセットする
       if (mode !== "t" && !prevInput.endsWith(context.toString())) {
+        // no kakutei explains this mismatch, hence the buffer has been
+        // rewritten by something else and the recorded kakutei is not to be
+        // trusted either
+        if (!resolved) {
+          context.invalidateKakutei();
+        }
         await initializeStateWithAbbrev(context, ["converter"]);
         context.preEdit.output("");
       }
@@ -338,6 +382,19 @@ export const main: Entrypoint = async (denops) => {
       const lib = await currentLibrary.get();
       return await lib.getHenkanResult(type, kana);
     },
+    async getCandidatesBatch(midashis: unknown, type: unknown = "okuriari") {
+      assert(midashis, is.ArrayOf(is.String));
+      assert(type, isHenkanType);
+      const lib = await currentLibrary.get();
+      // Note: Sequential lookup preserves compatibility with skk_server,
+      // which uses a single-slot readCallback on a serial TCP connection.
+      // The primary gain here is reducing N Denops RPC round trips to 1.
+      const results: Record<string, string[]> = {};
+      for (const midashi of midashis) {
+        results[midashi] = await lib.getHenkanResult(type, midashi);
+      }
+      return results;
+    },
     async getCompletionResult(): Promise<CompletionData> {
       const state = currentContext.get().state;
       if (state.type !== "input") {
@@ -345,6 +402,21 @@ export const main: Entrypoint = async (denops) => {
       }
       const lib = await currentLibrary.get();
       return lib.getCompletionResult(state.henkanFeed, state.feed);
+    },
+    async getCompletionResultWithRanks(): Promise<
+      { candidates: CompletionData; ranks: RankData }
+    > {
+      const state = currentContext.get().state;
+      if (state.type !== "input") {
+        return { candidates: [], ranks: [] };
+      }
+      const lib = await currentLibrary.get();
+      const candidates = await lib.getCompletionResult(
+        state.henkanFeed,
+        state.feed,
+      );
+      const ranks = lib.getRanks(state.henkanFeed);
+      return { candidates, ranks };
     },
     async getRanks(): Promise<RankData> {
       const state = currentContext.get().state;
@@ -354,18 +426,36 @@ export const main: Entrypoint = async (denops) => {
       const lib = await currentLibrary.get();
       return Promise.resolve(lib.getRanks(state.henkanFeed));
     },
+    async getCompleteItems() {
+      const state = currentContext.get().state;
+      if (state.type !== "input") {
+        return [];
+      }
+      const lib = await currentLibrary.get();
+      return await buildCompleteItems(
+        await lib.getCompletionResult(state.henkanFeed, state.feed),
+        lib.getRanks(state.henkanFeed),
+        state.henkanFeed,
+        (midasi) => lib.getHenkanResult("okuriari", midasi),
+      );
+    },
     async registerHenkanResult(midasi: unknown, word: unknown) {
       // Note: This method is compatible to completion source
       await denops.dispatcher.completeCallback(midasi, word);
     },
+    // Note: {inserted} is what the completion engine has written to the
+    //       buffer. It is optional for compatibility, but a source that omits
+    //       it cannot be taken back by |skkeleton-functions-kakuteiUndo|
     async completeCallback(
       midasi: unknown,
       word: unknown,
       type: unknown = "okurinasi",
+      inserted: unknown = "",
     ) {
       assert(midasi, is.String);
       assert(word, is.String);
       assert(type, isHenkanType);
+      assert(inserted, is.String);
       const lib = await currentLibrary.get();
       await lib.registerHenkanResult(type, midasi, word);
       const context = currentContext.get();
@@ -374,6 +464,7 @@ export const main: Entrypoint = async (denops) => {
         word: midasi,
         candidate: word,
       };
+      await completionKakutei(context, type, midasi, word, inserted);
     },
     // deno-lint-ignore require-await
     async getConfig() {

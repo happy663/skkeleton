@@ -26,10 +26,12 @@ export type Encoding = keyof typeof Encode;
 export type SkkServerOptions = {
   requestEnc: Encoding;
   responseEnc: Encoding;
+  timeout: number;
 } & Deno.ConnectOptions;
 
 export type ConfigOptions = {
   acceptIllegalResult: boolean;
+  completionBackend: string;
   completionRankFile: string;
   databasePath: string;
   debug: boolean;
@@ -53,6 +55,7 @@ export type ConfigOptions = {
   skkServerPort: number;
   skkServerReqEnc: Encoding;
   skkServerResEnc: Encoding;
+  skkServerTimeout: number;
   sources: string[];
   useGoogleJapaneseInput?: never;
   useSkkServer?: never;

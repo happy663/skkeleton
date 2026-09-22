@@ -144,6 +144,14 @@ function! s:notify_later(funcname, args) abort
 endfunction
 
 function! skkeleton#config(config) abort
+  " Note: keep a copy here because the Vim side looks the selected backend up
+  "       on every key press
+  if has_key(a:config, 'completionBackend')
+    if type(a:config.completionBackend) != v:t_string
+      throw '[skkeleton] completionBackend must be a string'
+    endif
+    let s:completion_backend = a:config.completionBackend
+  endif
   call skkeleton#request_async('config', [a:config])
 endfunction
 
@@ -161,20 +169,64 @@ function! skkeleton#register_kanatable_file(table_name, path, encoding='', creat
   call skkeleton#request_async('registerKanaTableFile', [a:table_name, a:path, a:encoding, a:create])
 endfunction
 
-" return [complete_type, complete_info]
-function! s:complete_info() abort
-  if exists('*pum#visible') && pum#visible()
-    return ['pum.vim', pum#complete_info(['pum_visible', 'selected'])]
-  elseif has('nvim') && luaeval('select(2, pcall(function() return package.loaded["cmp"].visible() end)) == true')
-    let selected = luaeval('require("cmp").get_active_entry() ~= nil')
-    return ['cmp', {'pum_visible': v:true, 'selected': selected ? 1 : -1}]
-  else
-    return ['native', complete_info(['pum_visible', 'selected'])]
-  endif
+let s:completion_backends = {}
+let s:completion_backend = 'native'
+let s:warned_backends = {}
+
+function! s:native_complete_info() abort
+  return complete_info(['pum_visible', 'selected'])
 endfunction
 
+function! skkeleton#register_completion_backend(name, backend) abort
+  if type(a:name) != v:t_string
+    throw '[skkeleton] completion backend name must be a string'
+  endif
+  if type(a:backend) != v:t_dict
+        \ || type(get(a:backend, 'complete_info')) != v:t_func
+        \ || type(get(a:backend, 'confirm_key')) != v:t_string
+    throw '[skkeleton] completion backend must be ' ..
+          \ '{complete_info: funcref, confirm_key: string}'
+  endif
+  let s:completion_backends[a:name] = a:backend
+endfunction
+
+" Note: the built-in completion is the only one skkeleton knows by itself
+"       every other engine registers its own backend
+call skkeleton#register_completion_backend('native', #{
+\   complete_info: function('s:native_complete_info'),
+\   confirm_key: "\<C-y>",
+\ })
+
+" return [backend_name, complete_info, confirm_key]
+function! s:complete_info() abort
+  let name = s:completion_backend
+  if !has_key(s:completion_backends, name)
+    " Note: a backend registered from `skkeleton-enable-pre` is still missing on
+    "       the first key press, and no completion menu can be open yet either
+    let name = 'native'
+  endif
+  let backend = s:completion_backends[name]
+  return [name, backend.complete_info(), backend.confirm_key]
+endfunction
+
+function! s:check_completion_backend() abort
+  let name = s:completion_backend
+  if has_key(s:completion_backends, name) || has_key(s:warned_backends, name)
+    return
+  endif
+  let s:warned_backends[name] = v:true
+  echohl WarningMsg
+  echomsg printf('[skkeleton] unknown completionBackend: %s (fallback to "native")', name)
+  echohl None
+endfunction
+
+augroup skkeleton-completion-backend
+  autocmd!
+  autocmd User skkeleton-enable-post call s:check_completion_backend()
+augroup END
+
 function! skkeleton#vim_status() abort
-  let [complete_type, complete_info] = s:complete_info()
+  let [complete_type, complete_info, complete_confirm_key] = s:complete_info()
   let m = mode()
   if m ==# 'i'
     let prev_input = getline('.')[:col('.')-2]
@@ -187,8 +239,11 @@ function! skkeleton#vim_status() abort
   endif
   return {
   \ 'prevInput': prev_input,
+  \ 'bufnr': bufnr('%'),
+  \ 'lnum': line('.'),
   \ 'completeInfo': complete_info,
   \ 'completeType': complete_type,
+  \ 'completeConfirmKey': complete_confirm_key,
   \ 'mode': m,
   \ }
 endfunction
@@ -213,6 +268,15 @@ function! skkeleton#handle(func, opts) abort
     let result = "\<Cmd>" .. result[5:] .. "\<CR>"
   endif
 
+  " Put the cursor back where |skkeleton-functions-kakuteiUndo| walked away
+  " from. This has to happen after the text has landed, so it rides along at
+  " the end of the same feedkeys() rather than being called from here.
+  let restore_col = get(ret, 'restoreCol', 0)
+  if restore_col > 0
+    let result ..= printf("\<Cmd>call skkeleton#restore_point(%d, %d)\<CR>",
+    \ get(ret, 'restoreLnum', 0), restore_col)
+  endif
+
   call skkeleton#doautocmd()
 
   if get(a:opts, 'expr', v:false)
@@ -228,6 +292,182 @@ function! skkeleton#get_config() abort
   return denops#request('skkeleton', 'getConfig', [])
 endfunction
 
+let s:complete_items = []
+" 補完範囲から外したmarkerHenkanをCompleteDoneで取り除くための記録
+let s:completing = {}
+
+function! skkeleton#completefunc(findstart, base) abort
+  if a:findstart
+    " Note: skkeleton#requestのs:wait()はdenopsが起動するまで戻らないため、
+    " 起動していない場合は待たずに補完を諦める
+    if !denops#plugin#is_loaded('skkeleton')
+      return -3
+    endif
+    let preedit = skkeleton#request('getPreEdit', [])
+    let start = col('.') - strlen(preedit) - 1
+    " Note: 補完で確定した直後などpre-editとバッファがずれている状態では、
+    " 開始位置が無関係なテキストを指してしまい補完がそれを消してしまう
+    if preedit ==# '' || start < 0 ||
+    \    strpart(getline('.'), start, strlen(preedit)) !=# preedit
+      return -3
+    endif
+    " Note: 候補が空のまま開始位置を返すとVimが'Pattern not found'を出すため、
+    " 候補はここで取得して無ければ補完自体を取り消す
+    let s:complete_items = skkeleton#request('getCompleteItems', [])
+    if empty(s:complete_items)
+      return -3
+    endif
+    let marker = skkeleton#get_config().markerHenkan
+    " Note: 'refresh'が'always'のとき補完で挿入された直後にもfindstartが呼ばれる。
+    " そこで-3を返す前にs:completingを捨てるとCompleteDoneがマーカーを消せなく
+    " なるため、補完を始められた場合だけ更新する
+    let s:completing = {}
+    " Note: 'complete'のFフラグ経由の補完はVimが決めた単語境界に候補を挿入する
+    " ため、単語文字ではないマーカーまで補完範囲に含めると候補の先頭文字が落ちる
+    if marker !=# '' && stridx(preedit, marker) == 0
+      let s:completing = #{
+      \   bufnr: bufnr('%'),
+      \   lnum: line('.'),
+      \   marker_start: start,
+      \   marker: marker,
+      \ }
+      let start += strlen(marker)
+    endif
+    return start
+  endif
+
+  return {
+  \ 'words': s:complete_items,
+  \ 'refresh': 'always',
+  \ }
+endfunction
+
+function! skkeleton#complete_done() abort
+  let completing = s:completing
+  let s:completing = {}
+
+  let metadata = s:completed_item_metadata()
+  " Note: 候補未確定のCompleteDoneは補完の中断でも発生する
+  " ('autocomplete'ではpre-editを書き直すバックスペースごとに起きる)。
+  " マーカーはまだskkeletonのpre-editの一部なのでここで消してはいけない
+  if empty(metadata)
+    return
+  endif
+
+  call s:remove_marker_henkan(completing)
+
+  call skkeleton#request_async('completeCallback',
+  \ [metadata.midasi, metadata.word, metadata.type, metadata.inserted])
+endfunction
+
+function! s:completed_item_metadata() abort
+  if !exists('v:completed_item') || type(v:completed_item) != v:t_dict
+    return {}
+  endif
+
+  let user_data = get(v:completed_item, 'user_data', '')
+  if type(user_data) != v:t_string || user_data !~# '^\s*{'
+    return {}
+  endif
+
+  try
+    let metadata = json_decode(user_data)
+  catch
+    return {}
+  endtry
+
+  if type(metadata) != v:t_dict
+    return {}
+  endif
+  " Note: 他プラグインのuser_dataも流れてくるため、文字列以外のtagと`!=#`で
+  " 比較するとE735/E691/E892で落ちる
+  let tag = get(metadata, 'tag', 0)
+  if type(tag) != v:t_string || tag !=# 'skkeleton'
+    return {}
+  endif
+
+  let midasi = get(metadata, 'midasi', 0)
+  let word = get(metadata, 'word', 0)
+  let henkan_type = get(metadata, 'type', 0)
+  if type(midasi) != v:t_string || type(word) != v:t_string || type(henkan_type) != v:t_string
+    return {}
+  endif
+  if henkan_type !=# 'okurinasi' && henkan_type !=# 'okuriari'
+    return {}
+  endif
+
+  " Note: 補完がバッファに書いた文字列 (注釈を除いた候補、送りありなら送り仮名
+  " 込み)。|skkeleton-functions-kakuteiUndo| で取り消すのに要る
+  let inserted = get(v:completed_item, 'word', '')
+  if type(inserted) != v:t_string
+    let inserted = ''
+  endif
+
+  return #{midasi: midasi, word: word, type: henkan_type, inserted: inserted}
+endfunction
+
+function! s:remove_marker_henkan(completing) abort
+  if empty(a:completing) || a:completing.bufnr != bufnr('%')
+  \    || a:completing.lnum != line('.')
+    return
+  endif
+  let line = getline('.')
+  let marker_start = a:completing.marker_start
+  let marker_len = strlen(a:completing.marker)
+  if strpart(line, marker_start, marker_len) !=# a:completing.marker
+    return
+  endif
+  let cursor_col = col('.')
+  silent! undojoin
+  call setline('.',
+  \ strpart(line, 0, marker_start) .. strpart(line, marker_start + marker_len))
+  if cursor_col > marker_start
+    call cursor(line('.'), cursor_col - marker_len)
+  endif
+endfunction
+
+" Put the cursor right after a kakutei which is still in the line, so that
+" |skkeleton-functions-kakuteiUndo| can delete it by feeding backspaces.
+" {before} is the line in front of the kakutei as it was when it happened, so
+" {before} .. {kakutei} has to still be the head of the line. Anything typed
+" after the kakutei is free to differ -- that is the case this is here for --
+" but an edit which has displaced or rewritten the kakutei itself makes this
+" give up rather than delete text it cannot account for.
+" Insert mode only: the command line has no line to walk back into, and a
+" terminal buffer is not ours to edit.
+function! skkeleton#locate_kakutei(bufnr, lnum, before, kakutei) abort
+  if mode() !=# 'i' || a:bufnr != bufnr('%') || a:lnum != line('.')
+    return v:false
+  endif
+  let head = a:before .. a:kakutei
+  if strpart(getline('.'), 0, strlen(head)) !=# head
+    return v:false
+  endif
+  let target = strlen(head) + 1
+  if col('.') != target
+    " Note: this does not break the undo block the insert is building up, so
+    "       the kakutei and its undo still go back with a single |u|
+    "       (|undojoin| would not help if it did: the deletion is fed back as
+    "       keys once |skkeleton#handle()| has returned, which is past the
+    "       command this runs in)
+    call cursor(a:lnum, target)
+  endif
+  return v:true
+endfunction
+
+" Put the cursor at {col}, a byte column of {lnum}, once whatever replaced the
+" taken back kakutei has been written. Fed at the end of the same keys as that
+" kakutei, so the line is already the final one by the time this runs.
+" {lnum} is where the undo happened: a kakutei followed by a newline leaves the
+" cursor on another line, and a column of the line it came from means nothing
+" there.
+function! skkeleton#restore_point(lnum, col) abort
+  if mode() !=# 'i' || line('.') != a:lnum
+    return
+  endif
+  call cursor(a:lnum, a:col)
+endfunction
+
 function! skkeleton#initialize() abort
   call skkeleton#notify_async('initialize', [])
 endfunction
@@ -235,6 +475,9 @@ endfunction
 function! skkeleton#disable()
   if g:skkeleton#enabled
     doautocmd <nomodeline> User skkeleton-disable-pre
+    " the candidate popup is closed on `User skkeleton-handled`, which no
+    " longer fires once disabled
+    call skkeleton#popup#close()
     call skkeleton#internal#map#restore()
     call skkeleton#internal#option#restore()
     let g:skkeleton#mode = ''

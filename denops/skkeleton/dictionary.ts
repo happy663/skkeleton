@@ -188,10 +188,12 @@ export function wrapDictionary(dict: Dictionary): Dictionary {
 
 export type HenkanType = "okuriari" | "okurinasi";
 
-export const isHenkanType = is.LiteralOneOf([
-  "okurinasi",
-  "okuriari",
-] as const) satisfies Predicate<HenkanType>;
+export const isHenkanType = is.LiteralOneOf(
+  [
+    "okurinasi",
+    "okuriari",
+  ] as const,
+) satisfies Predicate<HenkanType>;
 
 function gatherCandidates(
   collector: Map<string, Set<string>>,
@@ -243,22 +245,27 @@ export class Library {
     if (prefix.length == 0) {
       return [];
     } else if (prefix.length == 1) {
-      for (const dic of this.#dictionaries) {
-        const dicType =
-          (dic as any).sourceType || dic.constructor.name || "Unknown";
-        if (dicType === "google_japanese_input") {
-          continue; // スキップ
-        }
-        gatherCandidates(collector, [
-          [prefix, await dic.getHenkanResult("okurinasi", prefix)],
-        ]);
+      // 1文字目の候補取得でgoogle_japanese_inputへリクエストを飛ばさない
+      const results = await Promise.all(
+        this.#dictionaries
+          .filter((dic) =>
+            (dic as { sourceType?: string }).sourceType !==
+              "google_japanese_input"
+          )
+          .map((dic) => dic.getHenkanResult("okurinasi", prefix)),
+      );
+      for (const candidates of results) {
+        gatherCandidates(collector, [[
+          prefix,
+          candidates,
+        ]]);
       }
     } else {
-      for (const dic of this.#dictionaries) {
-        gatherCandidates(
-          collector,
-          await dic.getCompletionResult(prefix, feed),
-        );
+      const results = await Promise.all(
+        this.#dictionaries.map((dic) => dic.getCompletionResult(prefix, feed)),
+      );
+      for (const candidates of results) {
+        gatherCandidates(collector, candidates);
       }
     }
     return Array.from(collector.entries()).map(([kana, cset]) => [
@@ -347,7 +354,6 @@ export async function load(sources: string[]): Promise<Library> {
       }
       continue;
     }
-
   }
 
   return new Library(dictionaries, userDictionary);
